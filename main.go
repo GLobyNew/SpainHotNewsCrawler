@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -24,14 +23,6 @@ type NewsItem struct {
 	Source      string    `json:"source"`
 	PublishDate time.Time `json:"publish_date"`
 	Score       int       `json:"score"` // Relevance score for ranking
-}
-
-// WebhookPayload represents the data sent to the webhook
-type WebhookPayload struct {
-	Timestamp   time.Time  `json:"timestamp"`
-	TopNews     []NewsItem `json:"top_news"`
-	TrendingNow []string   `json:"trending_topics"`
-	Summary     string     `json:"summary"`
 }
 
 // Config holds the application configuration
@@ -418,7 +409,7 @@ func (na *NewsAggregator) rankNewsByRelevance(news []NewsItem) []NewsItem {
 }
 
 // AggregateNews combines all news sources and trends
-func (na *NewsAggregator) AggregateNews() (*WebhookPayload, error) {
+func (na *NewsAggregator) AggregateNews() ([]NewsItem, []string, error) {
 	// Fetch news from different sources
 	var allNews []NewsItem
 
@@ -448,7 +439,7 @@ func (na *NewsAggregator) AggregateNews() (*WebhookPayload, error) {
 
 	// Ensure we have at least some news
 	if len(allNews) == 0 {
-		return nil, fmt.Errorf("no news items could be fetched from any source")
+		return nil, nil, fmt.Errorf("no news items could be fetched from any source")
 	}
 
 	// Rank by relevance
@@ -474,21 +465,7 @@ func (na *NewsAggregator) AggregateNews() (*WebhookPayload, error) {
 	// Remove duplicates from trends
 	trendingTopics = removeDuplicates(trendingTopics)
 
-	// If no trends found, add a note
-	if len(trendingTopics) == 0 {
-		trendingTopics = []string{"No trending topics available at this time"}
-	}
-
-	// Create summary
-	summary := fmt.Sprintf("Top %d Spain news items from the last 24 hours. Sources: BBC Mundo, CNN en Español, and others. Trending topics include: %s",
-		len(topNews), strings.Join(trendingTopics[:min(5, len(trendingTopics))], ", "))
-
-	return &WebhookPayload{
-		Timestamp:   time.Now(),
-		TopNews:     topNews,
-		TrendingNow: trendingTopics,
-		Summary:     summary,
-	}, nil
+	return topNews, trendingTopics, nil
 }
 
 // FetchAdditionalSpanishNews fetches news from additional Spanish sources
@@ -516,19 +493,61 @@ func (na *NewsAggregator) FetchAdditionalSpanishNews() ([]NewsItem, error) {
 	return na.filterSpainNews(allNews), nil
 }
 
-// SendToWebhook sends the aggregated news to the specified webhook
-func (na *NewsAggregator) SendToWebhook(payload *WebhookPayload) error {
-	jsonData, err := json.MarshalIndent(payload, "", "  ")
-	if err != nil {
-		return fmt.Errorf("error marshaling payload: %v", err)
+// FormatNewsAsString formats the news and trends into a ready-to-use string
+func (na *NewsAggregator) FormatNewsAsString(topNews []NewsItem, trends []string) string {
+	var sb strings.Builder
+	
+	// Header
+	sb.WriteString("🇪🇸 **TOP 5 SPAIN NEWS** 🇪🇸\n")
+	sb.WriteString(fmt.Sprintf("📅 %s\n", time.Now().Format("January 2, 2006 - 15:04 MST")))
+	sb.WriteString("━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n")
+
+	// News items
+	for i, news := range topNews {
+		sb.WriteString(fmt.Sprintf("📰 **%d. %s**\n", i+1, news.Title))
+		sb.WriteString(fmt.Sprintf("📍 Source: %s\n", news.Source))
+		
+		if news.Description != "" {
+			description := truncateString(news.Description, 150)
+			sb.WriteString(fmt.Sprintf("📝 %s\n", description))
+		}
+		
+		sb.WriteString(fmt.Sprintf("🔗 %s\n", news.Link))
+		sb.WriteString("\n")
 	}
 
-	req, err := http.NewRequest("POST", na.config.WebhookURL, bytes.NewBuffer(jsonData))
+	// Trending topics
+	sb.WriteString("━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
+	sb.WriteString("🔥 **TRENDING IN SPAIN** 🔥\n\n")
+	
+	if len(trends) == 0 {
+		sb.WriteString("No trending topics available at this time.\n")
+	} else {
+		for i, trend := range trends {
+			if i >= 10 {
+				break
+			}
+			sb.WriteString(fmt.Sprintf("• %s\n", trend))
+		}
+	}
+	
+	sb.WriteString("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
+	sb.WriteString("📊 Sources: BBC Mundo, CNN Español, El País, Europa Press\n")
+	sb.WriteString("🔍 Trends: Google Trends, X (Twitter)")
+
+	return sb.String()
+}
+
+// SendToWebhook sends the formatted string to the specified webhook
+func (na *NewsAggregator) SendToWebhook(message string) error {
+	// Create a simple text/plain request
+	req, err := http.NewRequest("POST", na.config.WebhookURL, bytes.NewBufferString(message))
 	if err != nil {
 		return fmt.Errorf("error creating request: %v", err)
 	}
 
-	req.Header.Set("Content-Type", "application/json")
+	// Set content type to plain text
+	req.Header.Set("Content-Type", "text/plain; charset=utf-8")
 	req.Header.Set("User-Agent", na.config.UserAgent)
 
 	resp, err := na.client.Do(req)
@@ -568,45 +587,6 @@ func min(a, b int) int {
 	return b
 }
 
-// Run executes the news aggregation and webhook sending
-func (na *NewsAggregator) Run() error {
-	log.Println("Starting Spain news aggregation...")
-
-	payload, err := na.AggregateNews()
-	if err != nil {
-		return fmt.Errorf("error aggregating news: %v", err)
-	}
-
-	log.Printf("Aggregated %d news items and %d trending topics",
-		len(payload.TopNews), len(payload.TrendingNow))
-
-	// Print summary to console
-	fmt.Println("\n=== TOP SPAIN NEWS ===")
-	for i, news := range payload.TopNews {
-		fmt.Printf("\n%d. %s\n", i+1, news.Title)
-		fmt.Printf("   Source: %s\n", news.Source)
-		fmt.Printf("   Link: %s\n", news.Link)
-		if news.Description != "" {
-			fmt.Printf("   %s\n", truncateString(news.Description, 100))
-		}
-	}
-
-	fmt.Println("\n=== TRENDING TOPICS ===")
-	for i, trend := range payload.TrendingNow {
-		if i >= 10 {
-			break
-		}
-		fmt.Printf("%d. %s\n", i+1, trend)
-	}
-
-	// Send to webhook
-	if err := na.SendToWebhook(payload); err != nil {
-		return fmt.Errorf("error sending to webhook: %v", err)
-	}
-
-	return nil
-}
-
 func truncateString(s string, maxLen int) string {
 	if len(s) <= maxLen {
 		return s
@@ -614,8 +594,35 @@ func truncateString(s string, maxLen int) string {
 	return s[:maxLen] + "..."
 }
 
-func main() {
+// Run executes the news aggregation and webhook sending
+func (na *NewsAggregator) Run() error {
+	log.Println("Starting Spain news aggregation...")
 
+	topNews, trends, err := na.AggregateNews()
+	if err != nil {
+		return fmt.Errorf("error aggregating news: %v", err)
+	}
+
+	log.Printf("Aggregated %d news items and %d trending topics",
+		len(topNews), len(trends))
+
+	// Format as string
+	formattedMessage := na.FormatNewsAsString(topNews, trends)
+
+	// Print to console
+	fmt.Println("\n=== FORMATTED MESSAGE ===")
+	fmt.Println(formattedMessage)
+	fmt.Println("\n=== END OF MESSAGE ===")
+
+	// Send to webhook
+	if err := na.SendToWebhook(formattedMessage); err != nil {
+		return fmt.Errorf("error sending to webhook: %v", err)
+	}
+
+	return nil
+}
+
+func main() {
 	godotenv.Load()
 
 	webhookURL := os.Getenv("WEBHOOK_URL")
