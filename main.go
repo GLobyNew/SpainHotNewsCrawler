@@ -36,12 +36,10 @@ type WebhookPayload struct {
 
 // Config holds the application configuration
 type Config struct {
-	WebhookURL       string
-	MaxNewsItems     int
-	RequestTimeout   time.Duration
-	UserAgent        string
-	GoogleTrendsURL  string
-	TwitterTrendsAPI string
+	WebhookURL     string
+	MaxNewsItems   int
+	RequestTimeout time.Duration
+	UserAgent      string
 }
 
 // NewsAggregator is the main struct for the news aggregation service
@@ -54,11 +52,10 @@ type NewsAggregator struct {
 func NewNewsAggregator(webhookURL string) *NewsAggregator {
 	return &NewsAggregator{
 		config: Config{
-			WebhookURL:      webhookURL,
-			MaxNewsItems:    5,
-			RequestTimeout:  30 * time.Second,
-			UserAgent:       "SpainNewsAggregator/1.0",
-			GoogleTrendsURL: "https://trends.google.es/trends/trendingsearches/daily/rss?geo=ES",
+			WebhookURL:     webhookURL,
+			MaxNewsItems:   5,
+			RequestTimeout: 30 * time.Second,
+			UserAgent:      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
 		},
 		client: &http.Client{
 			Timeout: 30 * time.Second,
@@ -79,12 +76,69 @@ func (na *NewsAggregator) FetchBBCMundoNews() ([]NewsItem, error) {
 		news, err := na.fetchRSSFeed(url, "BBC Mundo")
 		if err != nil {
 			log.Printf("Error fetching BBC Mundo feed from %s: %v", url, err)
+			// Try web scraping as fallback
+			if scrapedNews, scrapErr := na.scrapeBBCMundo(); scrapErr == nil {
+				allNews = append(allNews, scrapedNews...)
+			}
 			continue
 		}
 		allNews = append(allNews, news...)
 	}
 
 	return na.filterSpainNews(allNews), nil
+}
+
+// scrapeBBCMundo scrapes BBC Mundo website as fallback
+func (na *NewsAggregator) scrapeBBCMundo() ([]NewsItem, error) {
+	url := "https://www.bbc.com/mundo/topics/c2lej05epw5t"
+
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Set("User-Agent", na.config.UserAgent)
+	resp, err := na.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	doc, err := goquery.NewDocumentFromReader(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	var news []NewsItem
+
+	doc.Find("article").Each(func(i int, s *goquery.Selection) {
+		if i >= 10 {
+			return
+		}
+
+		titleElem := s.Find("h3").First()
+		title := strings.TrimSpace(titleElem.Text())
+
+		linkElem := s.Find("a").First()
+		link, _ := linkElem.Attr("href")
+		if !strings.HasPrefix(link, "http") {
+			link = "https://www.bbc.com" + link
+		}
+
+		description := strings.TrimSpace(s.Find("p").First().Text())
+
+		if title != "" && link != "" {
+			news = append(news, NewsItem{
+				Title:       title,
+				Description: description,
+				Link:        link,
+				Source:      "BBC Mundo",
+				PublishDate: time.Now(),
+			})
+		}
+	})
+
+	return news, nil
 }
 
 // FetchCNNEspanolNews fetches news from CNN en Español
@@ -146,18 +200,73 @@ func (na *NewsAggregator) FetchCNNEspanolNews() ([]NewsItem, error) {
 
 // FetchGoogleTrends fetches trending topics from Google Trends Spain
 func (na *NewsAggregator) FetchGoogleTrends() ([]string, error) {
-	fp := gofeed.NewParser()
-	feed, err := fp.ParseURL(na.config.GoogleTrendsURL)
+	// Google Trends doesn't provide a public RSS feed anymore
+	// We'll scrape from trends aggregator websites instead
+	url := "https://trends.google.com/trends/trendingsearches/daily?geo=ES"
+
+	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
-		return nil, fmt.Errorf("error parsing Google Trends feed: %v", err)
+		return nil, err
+	}
+
+	req.Header.Set("User-Agent", na.config.UserAgent)
+	resp, err := na.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	// Google Trends uses JavaScript rendering, so we'll use an alternative approach
+	// Fetch from a trends aggregator that provides Spanish trends
+	return na.fetchTrendsFromAggregator()
+}
+
+// fetchTrendsFromAggregator fetches trends from aggregator sites
+func (na *NewsAggregator) fetchTrendsFromAggregator() ([]string, error) {
+	// Using getdaytrends as it provides real-time trends data
+	url := "https://getdaytrends.com/spain/"
+
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Set("User-Agent", na.config.UserAgent)
+	resp, err := na.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	doc, err := goquery.NewDocumentFromReader(resp.Body)
+	if err != nil {
+		return nil, err
 	}
 
 	var trends []string
-	for i, item := range feed.Items {
-		if i >= 10 { // Limit to top 10 trends
-			break
+
+	// Look for trending topics on the page
+	doc.Find(".trend-name").Each(func(i int, s *goquery.Selection) {
+		if i >= 10 { // Limit to top 10
+			return
 		}
-		trends = append(trends, item.Title)
+		trend := strings.TrimSpace(s.Text())
+		if trend != "" && !strings.Contains(trend, "...") {
+			trends = append(trends, trend)
+		}
+	})
+
+	// If the above selector doesn't work, try alternative selectors
+	if len(trends) == 0 {
+		doc.Find("a[href*='/trend/']").Each(func(i int, s *goquery.Selection) {
+			if i >= 10 {
+				return
+			}
+			trend := strings.TrimSpace(s.Text())
+			if trend != "" && len(trend) > 2 && !strings.Contains(trend, "...") {
+				trends = append(trends, trend)
+			}
+		})
 	}
 
 	return trends, nil
@@ -329,6 +438,19 @@ func (na *NewsAggregator) AggregateNews() (*WebhookPayload, error) {
 		allNews = append(allNews, cnnNews...)
 	}
 
+	// Additional Spanish news sources
+	additionalNews, err := na.FetchAdditionalSpanishNews()
+	if err != nil {
+		log.Printf("Error fetching additional news: %v", err)
+	} else {
+		allNews = append(allNews, additionalNews...)
+	}
+
+	// Ensure we have at least some news
+	if len(allNews) == 0 {
+		return nil, fmt.Errorf("no news items could be fetched from any source")
+	}
+
 	// Rank by relevance
 	topNews := na.rankNewsByRelevance(allNews)
 
@@ -352,8 +474,13 @@ func (na *NewsAggregator) AggregateNews() (*WebhookPayload, error) {
 	// Remove duplicates from trends
 	trendingTopics = removeDuplicates(trendingTopics)
 
+	// If no trends found, add a note
+	if len(trendingTopics) == 0 {
+		trendingTopics = []string{"No trending topics available at this time"}
+	}
+
 	// Create summary
-	summary := fmt.Sprintf("Top %d Spain news items from the last 24 hours. Sources: BBC Mundo, CNN en Español. Trending topics include: %s",
+	summary := fmt.Sprintf("Top %d Spain news items from the last 24 hours. Sources: BBC Mundo, CNN en Español, and others. Trending topics include: %s",
 		len(topNews), strings.Join(trendingTopics[:min(5, len(trendingTopics))], ", "))
 
 	return &WebhookPayload{
@@ -362,6 +489,31 @@ func (na *NewsAggregator) AggregateNews() (*WebhookPayload, error) {
 		TrendingNow: trendingTopics,
 		Summary:     summary,
 	}, nil
+}
+
+// FetchAdditionalSpanishNews fetches news from additional Spanish sources
+func (na *NewsAggregator) FetchAdditionalSpanishNews() ([]NewsItem, error) {
+	// El País RSS feed
+	elpaisNews, err := na.fetchRSSFeed("https://feeds.elpais.com/mrss-s/pages/ep/site/elpais.com/section/espana/portada", "El País")
+	if err != nil {
+		log.Printf("Error fetching El País feed: %v", err)
+	}
+
+	// Europa Press RSS
+	europaNews, err := na.fetchRSSFeed("https://www.europapress.es/rss/rss.aspx", "Europa Press")
+	if err != nil {
+		log.Printf("Error fetching Europa Press feed: %v", err)
+	}
+
+	var allNews []NewsItem
+	if elpaisNews != nil {
+		allNews = append(allNews, elpaisNews...)
+	}
+	if europaNews != nil {
+		allNews = append(allNews, europaNews...)
+	}
+
+	return na.filterSpainNews(allNews), nil
 }
 
 // SendToWebhook sends the aggregated news to the specified webhook
