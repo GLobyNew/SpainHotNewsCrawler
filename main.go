@@ -587,16 +587,7 @@ func (na *NewsAggregator) AggregateNews() ([]NewsItem, []string, error) {
 	// Remove duplicates from trends
 	trendingTopics = removeDuplicates(trendingTopics)
 
-	// Translate trending topics to Russian
-	if len(trendingTopics) > 0 {
-		translatedTrends, err := na.TranslateToRussian(trendingTopics)
-		if err != nil {
-			log.Printf("Error translating trends: %v", err)
-		} else {
-			// Replace with translated versions
-			trendingTopics = translatedTrends
-		}
-	}
+	// Don't translate trending topics - keep them in original language
 
 	return topNews, trendingTopics, nil
 }
@@ -626,16 +617,16 @@ func (na *NewsAggregator) FetchAdditionalSpanishNews() ([]NewsItem, error) {
 	return na.filterSpainNews(allNews), nil
 }
 
-// FormatNewsAsString formats the news and trends into a ready-to-use string (in Russian)
+// FormatNewsAsString formats the news and trends into a ready-to-use string
 func (na *NewsAggregator) FormatNewsAsString(topNews []NewsItem, trends []string) string {
 	var sb strings.Builder
 
-	// Header (in Russian)
-	sb.WriteString("🇪🇸 **ТОП-5 НОВОСТЕЙ ИСПАНИИ** 🇪🇸\n")
-	sb.WriteString(fmt.Sprintf("📅 %s\n", time.Now().Format("2 января 2006 - 15:04 MST")))
+	// Header
+	sb.WriteString("🇪🇸 **TOP 5 SPAIN NEWS** 🇪🇸\n")
+	sb.WriteString(fmt.Sprintf("📅 %s\n", time.Now().Format("January 2, 2006 - 15:04 MST")))
 	sb.WriteString("━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n")
 
-	// News items (in Russian)
+	// News items
 	for i, news := range topNews {
 		// Use Russian title if available, otherwise fallback to original
 		title := news.TitleRU
@@ -644,7 +635,7 @@ func (na *NewsAggregator) FormatNewsAsString(topNews []NewsItem, trends []string
 		}
 
 		sb.WriteString(fmt.Sprintf("📰 **%d. %s**\n", i+1, title))
-		sb.WriteString(fmt.Sprintf("📍 Источник: %s\n", news.Source))
+		sb.WriteString(fmt.Sprintf("📍 Source: %s\n", news.Source))
 
 		// Use Russian description if available
 		description := news.DescriptionRU
@@ -661,12 +652,12 @@ func (na *NewsAggregator) FormatNewsAsString(topNews []NewsItem, trends []string
 		sb.WriteString("\n")
 	}
 
-	// Trending topics (in Russian)
+	// Trending topics
 	sb.WriteString("━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
-	sb.WriteString("🔥 **ТРЕНДЫ В ИСПАНИИ** 🔥\n\n")
+	sb.WriteString("🔥 **TRENDING IN SPAIN** 🔥\n\n")
 
 	if len(trends) == 0 {
-		sb.WriteString("Трендовые темы в данный момент недоступны.\n")
+		sb.WriteString("No trending topics available at this time.\n")
 	} else {
 		for i, trend := range trends {
 			if i >= 10 {
@@ -677,8 +668,8 @@ func (na *NewsAggregator) FormatNewsAsString(topNews []NewsItem, trends []string
 	}
 
 	sb.WriteString("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
-	sb.WriteString("📊 Источники: BBC Mundo, CNN Español, El País, Europa Press\n")
-	sb.WriteString("🔍 Тренды: Google Trends, X (Twitter)")
+	sb.WriteString("📊 Sources: BBC Mundo, CNN Español, El País, Europa Press\n")
+	sb.WriteString("🔍 Trends: Google Trends, X (Twitter)")
 
 	return sb.String()
 }
@@ -756,11 +747,11 @@ func (na *NewsAggregator) Run() error {
 	log.Printf("Aggregated %d news items and %d trending topics",
 		len(topNews), len(trends))
 
-	// Format as string (now in Russian)
+	// Format as string
 	formattedMessage := na.FormatNewsAsString(topNews, trends)
 
 	// Print to console
-	fmt.Println("\n=== FORMATTED MESSAGE (RUSSIAN) ===")
+	fmt.Println("\n=== FORMATTED MESSAGE ===")
 	fmt.Println(formattedMessage)
 	fmt.Println("\n=== END OF MESSAGE ===")
 
