@@ -51,6 +51,93 @@ type NewsAggregator struct {
 	client *http.Client
 }
 
+// FetchTwitterTrends would fetch X (Twitter) trends
+// Note: This requires Twitter API access which needs authentication
+func (na *NewsAggregator) FetchTwitterTrends() ([]string, error) {
+	// For demonstration, we'll scrape from a trends aggregator
+	url := "https://trends24.in/spain/"
+
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Set("User-Agent", na.config.UserAgent)
+	resp, err := na.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	doc, err := goquery.NewDocumentFromReader(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	var trends []string
+	doc.Find(".trend-card__title").Each(func(i int, s *goquery.Selection) {
+		if i >= 5 { // Top 5 trends
+			return
+		}
+		trend := strings.TrimSpace(s.Text())
+		if trend != "" {
+			trends = append(trends, trend)
+		}
+	})
+
+	return trends, nil
+}
+
+// FetchMexicoTrends fetches trending topics from Mexico
+func (na *NewsAggregator) FetchMexicoTrends() ([]string, error) {
+	url := "https://trends24.in/mexico/"
+
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Set("User-Agent", na.config.UserAgent)
+	resp, err := na.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	doc, err := goquery.NewDocumentFromReader(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	var trends []string
+
+	// Try multiple selectors for trends24.in
+	doc.Find(".trend-card__title").Each(func(i int, s *goquery.Selection) {
+		if i >= 10 { // Top 10 trends
+			return
+		}
+		trend := strings.TrimSpace(s.Text())
+		if trend != "" {
+			trends = append(trends, trend)
+		}
+	})
+
+	// If no trends found with first selector, try alternatives
+	if len(trends) == 0 {
+		doc.Find("ol.trend-card__list li").Each(func(i int, s *goquery.Selection) {
+			if i >= 10 {
+				return
+			}
+			trend := strings.TrimSpace(s.Find("a").Text())
+			if trend != "" && !strings.Contains(trend, "#") {
+				trends = append(trends, trend)
+			}
+		})
+	}
+
+	return trends, nil
+}
+
 // NewNewsAggregator creates a new instance of NewsAggregator
 func NewNewsAggregator(webhookURL, deeplAPIKey string) *NewsAggregator {
 	return &NewsAggregator{
@@ -551,59 +638,64 @@ func (na *NewsAggregator) FetchElPaisMexico() ([]NewsItem, error) {
 
 // FetchCNNEspanolNews fetches news from CNN en Español
 func (na *NewsAggregator) FetchCNNEspanolNews() ([]NewsItem, error) {
-	// CNN en Español main page scraping since RSS might not be available
-	url := "https://cnnespanol.cnn.com/category/espana/"
-
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return nil, err
+	// Try multiple CNN en Español sections
+	urls := []string{
+		"https://cnnespanol.cnn.com/category/espana/",
+		"https://cnnespanol.cnn.com/latinoamerica/",
 	}
 
-	req.Header.Set("User-Agent", na.config.UserAgent)
-	resp, err := na.client.Do(req)
-	if err != nil {
-		return nil, err
+	var allNews []NewsItem
+
+	for _, url := range urls {
+		req, err := http.NewRequest("GET", url, nil)
+		if err != nil {
+			continue
+		}
+
+		req.Header.Set("User-Agent", na.config.UserAgent)
+		resp, err := na.client.Do(req)
+		if err != nil {
+			continue
+		}
+		defer resp.Body.Close()
+
+		doc, err := goquery.NewDocumentFromReader(resp.Body)
+		if err != nil {
+			continue
+		}
+
+		// Parse CNN articles
+		doc.Find("article").Each(func(i int, s *goquery.Selection) {
+			if len(allNews) >= 15 { // Limit total articles
+				return
+			}
+
+			titleElem := s.Find("h3 a").First()
+			title := strings.TrimSpace(titleElem.Text())
+			link, _ := titleElem.Attr("href")
+
+			if !strings.HasPrefix(link, "http") {
+				link = "https://cnnespanol.cnn.com" + link
+			}
+
+			description := strings.TrimSpace(s.Find(".news__excerpt").Text())
+			if description == "" {
+				description = strings.TrimSpace(s.Find("p").First().Text())
+			}
+
+			if title != "" && link != "" {
+				allNews = append(allNews, NewsItem{
+					Title:       title,
+					Description: description,
+					Link:        link,
+					Source:      "CNN en Español",
+					PublishDate: time.Now(), // CNN doesn't always show dates on listing
+				})
+			}
+		})
 	}
-	defer resp.Body.Close()
 
-	doc, err := goquery.NewDocumentFromReader(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-
-	var news []NewsItem
-
-	// Parse CNN articles
-	doc.Find("article").Each(func(i int, s *goquery.Selection) {
-		if i >= 10 { // Limit to 10 articles
-			return
-		}
-
-		titleElem := s.Find("h3 a").First()
-		title := strings.TrimSpace(titleElem.Text())
-		link, _ := titleElem.Attr("href")
-
-		if !strings.HasPrefix(link, "http") {
-			link = "https://cnnespanol.cnn.com" + link
-		}
-
-		description := strings.TrimSpace(s.Find(".news__excerpt").Text())
-		if description == "" {
-			description = strings.TrimSpace(s.Find("p").First().Text())
-		}
-
-		if title != "" && link != "" {
-			news = append(news, NewsItem{
-				Title:       title,
-				Description: description,
-				Link:        link,
-				Source:      "CNN en Español",
-				PublishDate: time.Now(), // CNN doesn't always show dates on listing
-			})
-		}
-	})
-
-	return news, nil
+	return allNews, nil
 }
 
 // FetchGoogleTrends fetches trending topics from Google Trends Spain
@@ -676,43 +768,6 @@ func (na *NewsAggregator) fetchTrendsFromAggregator() ([]string, error) {
 			}
 		})
 	}
-
-	return trends, nil
-}
-
-// FetchTwitterTrends would fetch X (Twitter) trends
-// Note: This requires Twitter API access which needs authentication
-func (na *NewsAggregator) FetchTwitterTrends() ([]string, error) {
-	// For demonstration, we'll scrape from a trends aggregator
-	url := "https://trends24.in/spain/"
-
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	req.Header.Set("User-Agent", na.config.UserAgent)
-	resp, err := na.client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	doc, err := goquery.NewDocumentFromReader(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-
-	var trends []string
-	doc.Find(".trend-card__title").Each(func(i int, s *goquery.Selection) {
-		if i >= 5 { // Top 5 trends
-			return
-		}
-		trend := strings.TrimSpace(s.Text())
-		if trend != "" {
-			trends = append(trends, trend)
-		}
-	})
 
 	return trends, nil
 }
@@ -922,6 +977,14 @@ func (na *NewsAggregator) AggregateNews() ([]NewsItem, []string, error) {
 		trendingTopics = append(trendingTopics, twitterTrends...)
 	}
 
+	// Fetch Mexico trends
+	mexicoTrends, err := na.FetchMexicoTrends()
+	if err != nil {
+		log.Printf("Error fetching Mexico trends: %v", err)
+	} else {
+		trendingTopics = append(trendingTopics, mexicoTrends...)
+	}
+
 	// Remove duplicates from trends
 	trendingTopics = removeDuplicates(trendingTopics)
 
@@ -1007,7 +1070,7 @@ func (na *NewsAggregator) FormatNewsAsString(topNews []NewsItem, trends []string
 
 	sb.WriteString("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
 	sb.WriteString("📊 Sources: BBC Mundo, CNN Español, El País, Europa Press, AP News, Reuters, Fox News, El Universal México, El País México\n")
-	sb.WriteString("🔍 Trends: Google Trends, X (Twitter)")
+	sb.WriteString("🔍 Trends: Google Trends Spain, X (Twitter) Spain, Mexico Trends")
 
 	return sb.String()
 }
@@ -1052,13 +1115,6 @@ func removeDuplicates(items []string) []string {
 	}
 
 	return result
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }
 
 func truncateString(s string, maxLen int) string {
