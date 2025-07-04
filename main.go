@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -17,20 +18,31 @@ import (
 
 // NewsItem represents a single news item
 type NewsItem struct {
-	Title       string    `json:"title"`
-	Description string    `json:"description"`
-	Link        string    `json:"link"`
-	Source      string    `json:"source"`
-	PublishDate time.Time `json:"publish_date"`
-	Score       int       `json:"score"` // Relevance score for ranking
+	Title         string    `json:"title"`
+	TitleRU       string    `json:"title_ru"`
+	Description   string    `json:"description"`
+	DescriptionRU string    `json:"description_ru"`
+	Link          string    `json:"link"`
+	Source        string    `json:"source"`
+	PublishDate   time.Time `json:"publish_date"`
+	Score         int       `json:"score"` // Relevance score for ranking
 }
 
 // Config holds the application configuration
 type Config struct {
 	WebhookURL     string
+	DeepLAPIKey    string
 	MaxNewsItems   int
 	RequestTimeout time.Duration
 	UserAgent      string
+}
+
+// DeepLTranslation represents the DeepL API response
+type DeepLTranslation struct {
+	Translations []struct {
+		DetectedSourceLanguage string `json:"detected_source_language"`
+		Text                   string `json:"text"`
+	} `json:"translations"`
 }
 
 // NewsAggregator is the main struct for the news aggregation service
@@ -40,10 +52,11 @@ type NewsAggregator struct {
 }
 
 // NewNewsAggregator creates a new instance of NewsAggregator
-func NewNewsAggregator(webhookURL string) *NewsAggregator {
+func NewNewsAggregator(webhookURL, deeplAPIKey string) *NewsAggregator {
 	return &NewsAggregator{
 		config: Config{
 			WebhookURL:     webhookURL,
+			DeepLAPIKey:    deeplAPIKey,
 			MaxNewsItems:   5,
 			RequestTimeout: 30 * time.Second,
 			UserAgent:      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -52,6 +65,112 @@ func NewNewsAggregator(webhookURL string) *NewsAggregator {
 			Timeout: 30 * time.Second,
 		},
 	}
+}
+
+// TranslateToRussian translates text to Russian using DeepL API
+func (na *NewsAggregator) TranslateToRussian(texts []string) ([]string, error) {
+	if len(texts) == 0 {
+		return []string{}, nil
+	}
+
+	// DeepL API endpoint (use api-free.deepl.com for free tier)
+	url := "https://api-free.deepl.com/v2/translate"
+
+	// Prepare request body
+	data := make(map[string]interface{})
+	data["text"] = texts
+	data["target_lang"] = "RU"
+	data["source_lang"] = "ES" // Spanish source
+
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Set("Authorization", "DeepL-Auth-Key "+na.config.DeepLAPIKey)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := na.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("DeepL API error: %d - %s", resp.StatusCode, string(body))
+	}
+
+	var result DeepLTranslation
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, err
+	}
+
+	translations := make([]string, len(result.Translations))
+	for i, t := range result.Translations {
+		translations[i] = t.Text
+	}
+
+	return translations, nil
+}
+
+// TranslateNewsItems translates all news items to Russian
+func (na *NewsAggregator) TranslateNewsItems(news []NewsItem) []NewsItem {
+	// Batch translation for efficiency
+	var titlesToTranslate []string
+	var descriptionsToTranslate []string
+
+	for _, item := range news {
+		titlesToTranslate = append(titlesToTranslate, item.Title)
+		if item.Description != "" {
+			descriptionsToTranslate = append(descriptionsToTranslate, item.Description)
+		} else {
+			descriptionsToTranslate = append(descriptionsToTranslate, "No description available")
+		}
+	}
+
+	// Translate titles
+	translatedTitles, err := na.TranslateToRussian(titlesToTranslate)
+	if err != nil {
+		log.Printf("Error translating titles: %v", err)
+		// Fall back to original titles
+		for i := range news {
+			news[i].TitleRU = news[i].Title
+		}
+	} else {
+		for i := range news {
+			if i < len(translatedTitles) {
+				news[i].TitleRU = translatedTitles[i]
+			} else {
+				news[i].TitleRU = news[i].Title
+			}
+		}
+	}
+
+	// Translate descriptions
+	translatedDescriptions, err := na.TranslateToRussian(descriptionsToTranslate)
+	if err != nil {
+		log.Printf("Error translating descriptions: %v", err)
+		// Fall back to original descriptions
+		for i := range news {
+			news[i].DescriptionRU = news[i].Description
+		}
+	} else {
+		for i := range news {
+			if i < len(translatedDescriptions) {
+				news[i].DescriptionRU = translatedDescriptions[i]
+			} else {
+				news[i].DescriptionRU = news[i].Description
+			}
+		}
+	}
+
+	return news
 }
 
 // FetchBBCMundoNews fetches news from BBC Mundo
@@ -445,6 +564,9 @@ func (na *NewsAggregator) AggregateNews() ([]NewsItem, []string, error) {
 	// Rank by relevance
 	topNews := na.rankNewsByRelevance(allNews)
 
+	// Translate the top news items to Russian
+	topNews = na.TranslateNewsItems(topNews)
+
 	// Fetch trending topics
 	var trendingTopics []string
 
@@ -464,6 +586,17 @@ func (na *NewsAggregator) AggregateNews() ([]NewsItem, []string, error) {
 
 	// Remove duplicates from trends
 	trendingTopics = removeDuplicates(trendingTopics)
+
+	// Translate trending topics to Russian
+	if len(trendingTopics) > 0 {
+		translatedTrends, err := na.TranslateToRussian(trendingTopics)
+		if err != nil {
+			log.Printf("Error translating trends: %v", err)
+		} else {
+			// Replace with translated versions
+			trendingTopics = translatedTrends
+		}
+	}
 
 	return topNews, trendingTopics, nil
 }
@@ -493,35 +626,47 @@ func (na *NewsAggregator) FetchAdditionalSpanishNews() ([]NewsItem, error) {
 	return na.filterSpainNews(allNews), nil
 }
 
-// FormatNewsAsString formats the news and trends into a ready-to-use string
+// FormatNewsAsString formats the news and trends into a ready-to-use string (in Russian)
 func (na *NewsAggregator) FormatNewsAsString(topNews []NewsItem, trends []string) string {
 	var sb strings.Builder
-	
-	// Header
-	sb.WriteString("🇪🇸 **TOP 5 SPAIN NEWS** 🇪🇸\n")
-	sb.WriteString(fmt.Sprintf("📅 %s\n", time.Now().Format("January 2, 2006 - 15:04 MST")))
+
+	// Header (in Russian)
+	sb.WriteString("🇪🇸 **ТОП-5 НОВОСТЕЙ ИСПАНИИ** 🇪🇸\n")
+	sb.WriteString(fmt.Sprintf("📅 %s\n", time.Now().Format("2 января 2006 - 15:04 MST")))
 	sb.WriteString("━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n")
 
-	// News items
+	// News items (in Russian)
 	for i, news := range topNews {
-		sb.WriteString(fmt.Sprintf("📰 **%d. %s**\n", i+1, news.Title))
-		sb.WriteString(fmt.Sprintf("📍 Source: %s\n", news.Source))
-		
-		if news.Description != "" {
-			description := truncateString(news.Description, 150)
+		// Use Russian title if available, otherwise fallback to original
+		title := news.TitleRU
+		if title == "" {
+			title = news.Title
+		}
+
+		sb.WriteString(fmt.Sprintf("📰 **%d. %s**\n", i+1, title))
+		sb.WriteString(fmt.Sprintf("📍 Источник: %s\n", news.Source))
+
+		// Use Russian description if available
+		description := news.DescriptionRU
+		if description == "" {
+			description = news.Description
+		}
+
+		if description != "" && description != "No description available" {
+			description = truncateString(description, 150)
 			sb.WriteString(fmt.Sprintf("📝 %s\n", description))
 		}
-		
+
 		sb.WriteString(fmt.Sprintf("🔗 %s\n", news.Link))
 		sb.WriteString("\n")
 	}
 
-	// Trending topics
+	// Trending topics (in Russian)
 	sb.WriteString("━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
-	sb.WriteString("🔥 **TRENDING IN SPAIN** 🔥\n\n")
-	
+	sb.WriteString("🔥 **ТРЕНДЫ В ИСПАНИИ** 🔥\n\n")
+
 	if len(trends) == 0 {
-		sb.WriteString("No trending topics available at this time.\n")
+		sb.WriteString("Трендовые темы в данный момент недоступны.\n")
 	} else {
 		for i, trend := range trends {
 			if i >= 10 {
@@ -530,10 +675,10 @@ func (na *NewsAggregator) FormatNewsAsString(topNews []NewsItem, trends []string
 			sb.WriteString(fmt.Sprintf("• %s\n", trend))
 		}
 	}
-	
+
 	sb.WriteString("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
-	sb.WriteString("📊 Sources: BBC Mundo, CNN Español, El País, Europa Press\n")
-	sb.WriteString("🔍 Trends: Google Trends, X (Twitter)")
+	sb.WriteString("📊 Источники: BBC Mundo, CNN Español, El País, Europa Press\n")
+	sb.WriteString("🔍 Тренды: Google Trends, X (Twitter)")
 
 	return sb.String()
 }
@@ -591,12 +736,17 @@ func truncateString(s string, maxLen int) string {
 	if len(s) <= maxLen {
 		return s
 	}
+	// Find last space before maxLen to avoid cutting words
+	lastSpace := strings.LastIndex(s[:maxLen], " ")
+	if lastSpace > 0 {
+		return s[:lastSpace] + "..."
+	}
 	return s[:maxLen] + "..."
 }
 
 // Run executes the news aggregation and webhook sending
 func (na *NewsAggregator) Run() error {
-	log.Println("Starting Spain news aggregation...")
+	log.Println("Starting Spain news aggregation with Russian translation...")
 
 	topNews, trends, err := na.AggregateNews()
 	if err != nil {
@@ -606,11 +756,11 @@ func (na *NewsAggregator) Run() error {
 	log.Printf("Aggregated %d news items and %d trending topics",
 		len(topNews), len(trends))
 
-	// Format as string
+	// Format as string (now in Russian)
 	formattedMessage := na.FormatNewsAsString(topNews, trends)
 
 	// Print to console
-	fmt.Println("\n=== FORMATTED MESSAGE ===")
+	fmt.Println("\n=== FORMATTED MESSAGE (RUSSIAN) ===")
 	fmt.Println(formattedMessage)
 	fmt.Println("\n=== END OF MESSAGE ===")
 
@@ -630,12 +780,17 @@ func main() {
 		log.Fatalf("WEBHOOK_URL environment variable is not set")
 	}
 
+	deeplAPIKey := os.Getenv("DEEPL_API_KEY")
+	if deeplAPIKey == "" {
+		log.Fatalf("DEEPL_API_KEY environment variable is not set")
+	}
+
 	// Create and run aggregator
-	aggregator := NewNewsAggregator(webhookURL)
+	aggregator := NewNewsAggregator(webhookURL, deeplAPIKey)
 
 	if err := aggregator.Run(); err != nil {
 		log.Fatal(err)
 	}
 
-	log.Println("News aggregation completed successfully!")
+	log.Println("News aggregation with Russian translation completed successfully!")
 }
