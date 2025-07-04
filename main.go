@@ -200,7 +200,65 @@ func (na *NewsAggregator) FetchBBCMundoNews() ([]NewsItem, error) {
 
 // scrapeBBCMundo scrapes BBC Mundo website as fallback
 func (na *NewsAggregator) scrapeBBCMundo() ([]NewsItem, error) {
-	url := "https://www.bbc.com/mundo/topics/c2lej05epw5t"
+	urls := []string{
+		"https://www.bbc.com/mundo/topics/c2lej05epw5t",
+		"https://www.bbc.com/mundo/topics/c7zp57yyz25t", // New URL added
+	}
+
+	var allNews []NewsItem
+
+	for _, url := range urls {
+		req, err := http.NewRequest("GET", url, nil)
+		if err != nil {
+			continue
+		}
+
+		req.Header.Set("User-Agent", na.config.UserAgent)
+		resp, err := na.client.Do(req)
+		if err != nil {
+			continue
+		}
+		defer resp.Body.Close()
+
+		doc, err := goquery.NewDocumentFromReader(resp.Body)
+		if err != nil {
+			continue
+		}
+
+		doc.Find("article").Each(func(i int, s *goquery.Selection) {
+			if len(allNews) >= 10 {
+				return
+			}
+
+			titleElem := s.Find("h3").First()
+			title := strings.TrimSpace(titleElem.Text())
+
+			linkElem := s.Find("a").First()
+			link, _ := linkElem.Attr("href")
+			if !strings.HasPrefix(link, "http") {
+				link = "https://www.bbc.com" + link
+			}
+
+			description := strings.TrimSpace(s.Find("p").First().Text())
+
+			if title != "" && link != "" {
+				allNews = append(allNews, NewsItem{
+					Title:       title,
+					Description: description,
+					Link:        link,
+					Source:      "BBC Mundo",
+					PublishDate: time.Now(),
+				})
+			}
+		})
+	}
+
+	return allNews, nil
+}
+
+// FetchAPNewsLatinAmerica fetches news from AP News Latin America
+func (na *NewsAggregator) FetchAPNewsLatinAmerica() ([]NewsItem, error) {
+	url := "https://apnews.com/hub/latin-america"
 
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
@@ -221,18 +279,22 @@ func (na *NewsAggregator) scrapeBBCMundo() ([]NewsItem, error) {
 
 	var news []NewsItem
 
-	doc.Find("article").Each(func(i int, s *goquery.Selection) {
+	// AP News article structure
+	doc.Find("div[data-key='card-headline']").Each(func(i int, s *goquery.Selection) {
 		if i >= 10 {
 			return
 		}
 
 		titleElem := s.Find("h3").First()
+		if titleElem.Length() == 0 {
+			titleElem = s.Find("h2").First()
+		}
 		title := strings.TrimSpace(titleElem.Text())
 
 		linkElem := s.Find("a").First()
 		link, _ := linkElem.Attr("href")
 		if !strings.HasPrefix(link, "http") {
-			link = "https://www.bbc.com" + link
+			link = "https://apnews.com" + link
 		}
 
 		description := strings.TrimSpace(s.Find("p").First().Text())
@@ -242,13 +304,249 @@ func (na *NewsAggregator) scrapeBBCMundo() ([]NewsItem, error) {
 				Title:       title,
 				Description: description,
 				Link:        link,
-				Source:      "BBC Mundo",
+				Source:      "AP News",
 				PublishDate: time.Now(),
 			})
 		}
 	})
 
 	return news, nil
+}
+
+// FetchReutersLatinAmerica fetches news from Reuters Latin America
+func (na *NewsAggregator) FetchReutersLatinAmerica() ([]NewsItem, error) {
+	url := "https://www.reuters.com/world/americas/"
+
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Set("User-Agent", na.config.UserAgent)
+	resp, err := na.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	doc, err := goquery.NewDocumentFromReader(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	var news []NewsItem
+
+	// Reuters article structure
+	doc.Find("article").Each(func(i int, s *goquery.Selection) {
+		if i >= 10 {
+			return
+		}
+
+		titleElem := s.Find("h3").First()
+		if titleElem.Length() == 0 {
+			titleElem = s.Find("h2").First()
+		}
+		title := strings.TrimSpace(titleElem.Text())
+
+		linkElem := s.Find("a").First()
+		link, _ := linkElem.Attr("href")
+		if !strings.HasPrefix(link, "http") {
+			link = "https://www.reuters.com" + link
+		}
+
+		description := strings.TrimSpace(s.Find("p").First().Text())
+
+		if title != "" && link != "" {
+			news = append(news, NewsItem{
+				Title:       title,
+				Description: description,
+				Link:        link,
+				Source:      "Reuters",
+				PublishDate: time.Now(),
+			})
+		}
+	})
+
+	return news, nil
+}
+
+// FetchFoxNewsLatinAmerica fetches news from Fox News Latin America
+func (na *NewsAggregator) FetchFoxNewsLatinAmerica() ([]NewsItem, error) {
+	url := "https://www.foxnews.com/category/world/world-regions/latin-america"
+
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Set("User-Agent", na.config.UserAgent)
+	resp, err := na.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	doc, err := goquery.NewDocumentFromReader(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	var news []NewsItem
+
+	// Fox News article structure
+	doc.Find("article").Each(func(i int, s *goquery.Selection) {
+		if i >= 10 {
+			return
+		}
+
+		titleElem := s.Find("h3").First()
+		if titleElem.Length() == 0 {
+			titleElem = s.Find("h2").First()
+		}
+		title := strings.TrimSpace(titleElem.Text())
+
+		linkElem := s.Find("a").First()
+		link, _ := linkElem.Attr("href")
+		if !strings.HasPrefix(link, "http") {
+			link = "https://www.foxnews.com" + link
+		}
+
+		description := strings.TrimSpace(s.Find("p").First().Text())
+
+		if title != "" && link != "" {
+			news = append(news, NewsItem{
+				Title:       title,
+				Description: description,
+				Link:        link,
+				Source:      "Fox News",
+				PublishDate: time.Now(),
+			})
+		}
+	})
+
+	return news, nil
+}
+
+// FetchElUniversalMexico fetches news from El Universal Mexico
+func (na *NewsAggregator) FetchElUniversalMexico() ([]NewsItem, error) {
+	// Try RSS feed first
+	rssURL := "https://www.eluniversal.com.mx/rss.xml"
+	news, err := na.fetchRSSFeed(rssURL, "El Universal México")
+	if err == nil && len(news) > 0 {
+		return news, nil
+	}
+
+	// Fallback to web scraping
+	url := "https://www.eluniversal.com.mx/"
+
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Set("User-Agent", na.config.UserAgent)
+	resp, err := na.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	doc, err := goquery.NewDocumentFromReader(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	var newsItems []NewsItem
+
+	// El Universal article structure
+	doc.Find("article").Each(func(i int, s *goquery.Selection) {
+		if i >= 10 {
+			return
+		}
+
+		titleElem := s.Find("h2 a, h3 a").First()
+		title := strings.TrimSpace(titleElem.Text())
+		link, _ := titleElem.Attr("href")
+
+		if !strings.HasPrefix(link, "http") {
+			link = "https://www.eluniversal.com.mx" + link
+		}
+
+		description := strings.TrimSpace(s.Find("p").First().Text())
+
+		if title != "" && link != "" {
+			newsItems = append(newsItems, NewsItem{
+				Title:       title,
+				Description: description,
+				Link:        link,
+				Source:      "El Universal México",
+				PublishDate: time.Now(),
+			})
+		}
+	})
+
+	return newsItems, nil
+}
+
+// FetchElPaisMexico fetches news from El País Mexico section
+func (na *NewsAggregator) FetchElPaisMexico() ([]NewsItem, error) {
+	// Try RSS feed first
+	rssURL := "https://feeds.elpais.com/mrss-s/pages/ep/site/elpais.com/section/mexico/portada"
+	news, err := na.fetchRSSFeed(rssURL, "El País México")
+	if err == nil && len(news) > 0 {
+		return news, nil
+	}
+
+	// Fallback to web scraping
+	url := "https://elpais.com/noticias/mexico/"
+
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Set("User-Agent", na.config.UserAgent)
+	resp, err := na.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	doc, err := goquery.NewDocumentFromReader(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	var newsItems []NewsItem
+
+	// El País article structure
+	doc.Find("article").Each(func(i int, s *goquery.Selection) {
+		if i >= 10 {
+			return
+		}
+
+		titleElem := s.Find("h2 a").First()
+		title := strings.TrimSpace(titleElem.Text())
+		link, _ := titleElem.Attr("href")
+
+		if !strings.HasPrefix(link, "http") {
+			link = "https://elpais.com" + link
+		}
+
+		description := strings.TrimSpace(s.Find("p").First().Text())
+
+		if title != "" && link != "" {
+			newsItems = append(newsItems, NewsItem{
+				Title:       title,
+				Description: description,
+				Link:        link,
+				Source:      "El País México",
+				PublishDate: time.Now(),
+			})
+		}
+	})
+
+	return newsItems, nil
 }
 
 // FetchCNNEspanolNews fetches news from CNN en Español
@@ -548,6 +846,46 @@ func (na *NewsAggregator) AggregateNews() ([]NewsItem, []string, error) {
 		allNews = append(allNews, cnnNews...)
 	}
 
+	// AP News Latin America
+	apNews, err := na.FetchAPNewsLatinAmerica()
+	if err != nil {
+		log.Printf("Error fetching AP News: %v", err)
+	} else {
+		allNews = append(allNews, apNews...)
+	}
+
+	// Reuters Latin America
+	reutersNews, err := na.FetchReutersLatinAmerica()
+	if err != nil {
+		log.Printf("Error fetching Reuters news: %v", err)
+	} else {
+		allNews = append(allNews, reutersNews...)
+	}
+
+	// Fox News Latin America
+	foxNews, err := na.FetchFoxNewsLatinAmerica()
+	if err != nil {
+		log.Printf("Error fetching Fox News: %v", err)
+	} else {
+		allNews = append(allNews, foxNews...)
+	}
+
+	// El Universal Mexico
+	elUniversalNews, err := na.FetchElUniversalMexico()
+	if err != nil {
+		log.Printf("Error fetching El Universal news: %v", err)
+	} else {
+		allNews = append(allNews, elUniversalNews...)
+	}
+
+	// El País Mexico
+	elPaisMexicoNews, err := na.FetchElPaisMexico()
+	if err != nil {
+		log.Printf("Error fetching El País Mexico news: %v", err)
+	} else {
+		allNews = append(allNews, elPaisMexicoNews...)
+	}
+
 	// Additional Spanish news sources
 	additionalNews, err := na.FetchAdditionalSpanishNews()
 	if err != nil {
@@ -668,7 +1006,7 @@ func (na *NewsAggregator) FormatNewsAsString(topNews []NewsItem, trends []string
 	}
 
 	sb.WriteString("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
-	sb.WriteString("📊 Sources: BBC Mundo, CNN Español, El País, Europa Press\n")
+	sb.WriteString("📊 Sources: BBC Mundo, CNN Español, El País, Europa Press, AP News, Reuters, Fox News, El Universal México, El País México\n")
 	sb.WriteString("🔍 Trends: Google Trends, X (Twitter)")
 
 	return sb.String()
